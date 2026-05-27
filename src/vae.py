@@ -12,7 +12,7 @@ class SpatialVae(nn.Module):
 
         # Encode
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
             nn.GELU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
             nn.GELU(),
@@ -36,7 +36,7 @@ class SpatialVae(nn.Module):
             nn.GELU(),
             nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
             nn.GELU(),
-            nn.Conv2d(32, 3, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(32, in_channels, kernel_size=3, stride=1, padding=1),
             nn.Tanh(),
         )
 
