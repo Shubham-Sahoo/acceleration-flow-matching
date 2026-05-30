@@ -121,7 +121,7 @@ class LatentViT(nn.Module):
         self.patch_embed = PatchEmbedding(latent_channels=latent_channels, embed_dim=embed_dim)
         # self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, 64, embed_dim))
-
+        self.class_embed = nn.Embedding(10, embed_dim)
         self.time_embed = nn.Sequential(
             nn.Linear(1, embed_dim),
             nn.GELU(),
@@ -134,10 +134,15 @@ class LatentViT(nn.Module):
             dim_feedforward=embed_dim*4,
             dropout=0.1,
             batch_first=True,
-            activation='gelu'
+            activation='gelu',
+            norm_first=True
             )
 
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=depth)
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, 
+            num_layers=depth,
+            norm=nn.LayerNorm(embed_dim) 
+            )
 
         self.output_proj = nn.Linear(embed_dim, latent_channels)
 
@@ -145,8 +150,10 @@ class LatentViT(nn.Module):
 
         nn.init.normal_(self.pos_embed, std=0.02)
         # nn.init.normal_(self.cls_token, std=0.02)
+        nn.init.normal_(self.output_proj.weight, std=0.02)
+        nn.init.zeros_(self.output_proj.bias)
 
-    def forward(self, z, t):
+    def forward(self, z, class_label, t):
         """
             z : (B, C, H, W)
             t : (B, 1, 1)
@@ -158,9 +165,11 @@ class LatentViT(nn.Module):
 
         if t.dim() == 1:
             t = t.unsqueeze(1)
+
+        c_emb = self.class_embed(class_label)       # (B, embed_dim)
         
         t_emb = self.time_embed(t)
-        x = x + t_emb.unsqueeze(1)
+        x = x + t_emb.unsqueeze(1) + c_emb.unsqueeze(1)
         # cls = self.cls_token.expand(B, -1, -1)
         # x = torch.cat([cls, x], dim=1)
         x = x + self.pos_embed
@@ -173,16 +182,16 @@ class LatentViT(nn.Module):
 
 
 
-model = LatentViT(latent_channels=16, embed_dim=192, depth=12, num_heads=3)
-model = model.to('cpu')
+# model = LatentViT(latent_channels=16, embed_dim=192, depth=12, num_heads=3)
+# model = model.to('cpu')
 
-z = torch.randn((8, 16, 8, 8))
-t = torch.randn((8, 1))
+# z = torch.randn((8, 16, 8, 8))
+# t = torch.randn((8, 1))
 
-e = model.forward(z,t)
-print(e.shape)
+# e = model.forward(z,t)
+# print(e.shape)
 
-print(f"Model parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+# print(f"Model parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
 
-print("✓ Model ready")
-torch.save(model.state_dict(), 'simplevit_baseline.pth')
+# print("✓ Model ready")
+# torch.save(model.state_dict(), 'simplevit_baseline.pth')
