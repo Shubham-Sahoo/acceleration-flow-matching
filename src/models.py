@@ -127,6 +127,11 @@ class LatentViT(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim)
         )
+        self.class_proj = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim)
+        )
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim, 
@@ -168,6 +173,7 @@ class LatentViT(nn.Module):
 
         c_emb = self.class_embed(class_label)       # (B, embed_dim)
         
+        c_emb = self.class_proj(c_emb)
         t_emb = self.time_embed(t)
         x = x + t_emb.unsqueeze(1) + c_emb.unsqueeze(1)
         # cls = self.cls_token.expand(B, -1, -1)
