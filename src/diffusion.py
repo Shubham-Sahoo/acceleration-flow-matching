@@ -17,7 +17,7 @@ class DDPMSampler:
         self.sqrt_alpha_bars = torch.sqrt(self.alpha_bars)
         self.sqrt_1_minus_alpha_bars = torch.sqrt(1 - self.alpha_bars)
 
-    def forward_loss(self, x, num_steps, loss_criterion):
+    def forward_loss(self, x, num_steps, loss_criterion=None):
         x = x.to(self.device)  # (B, 3, 8, 8)
         B = x.size(0)
 
@@ -35,9 +35,13 @@ class DDPMSampler:
         x_t = sqrt_alpha_bars * x + sqrt_1_minus_alpha_bars * epsilon
 
         epsilon_pred = self.model(x_t, t) 
-        loss = loss_criterion(epsilon_pred, epsilon)
 
-        return loss
+        loss = None
+
+        if loss_criterion is not None:
+            loss = loss_criterion(epsilon_pred, epsilon)
+
+        return loss, epsilon_pred
 
 
     def sample(self, x_t, t_steps=50, verbose=False):
@@ -87,9 +91,10 @@ class DDPMSpatialLatent:
         self.sqrt_alpha_bars = torch.sqrt(self.alpha_bars)
         self.sqrt_1_minus_alpha_bars = torch.sqrt(1 - self.alpha_bars)
 
-    def forward_loss(self, x, num_steps, loss_criterion):
-        x = x.to(self.device)  # (B, 3, 32, 32)
+    def forward_loss(self, x, class_labels, num_steps, loss_criterion):
+        x = x.to(self.device)  # (B, 3, 28, 28)
         B = x.size(0)
+        class_labels = class_labels.to(self.device)
 
         self.vae.eval()
 
@@ -109,13 +114,16 @@ class DDPMSpatialLatent:
         
         z_t = sqrt_alpha_bars * z_0 + sqrt_1_minus_alpha_bars * epsilon
 
-        epsilon_pred = self.model(z_t, t) 
-        loss = loss_criterion(epsilon_pred, epsilon)
+        epsilon_pred = self.model(z_t, class_labels, t) 
+        loss = None
+        
+        if loss_criterion is not None:
+            loss = loss_criterion(epsilon_pred, epsilon)
 
-        return loss
+        return loss, epsilon_pred
 
 
-    def sample(self, z_t, t_steps=50, verbose=False):
+    def sample(self, z_t, class_labels, t_steps=50, verbose=False):
         timesteps = torch.linspace(self.num_steps - 1, 0, t_steps, dtype=torch.long, device=self.device)
         iterator = tqdm(timesteps, desc="DDPM") if verbose else timesteps  
 
@@ -125,7 +133,7 @@ class DDPMSpatialLatent:
                 t_tensor = torch.full((z_t.size(0), ), t, device=self.device, dtype=torch.float32)
 
                 # Predict noise
-                epsilon_pred = self.model(z_t, t_tensor)
+                epsilon_pred = self.model(z_t, class_labels, t_tensor)
 
                 # Denoise
 
