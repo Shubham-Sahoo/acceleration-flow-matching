@@ -4,6 +4,22 @@ A latent diffusion framework comparing DDPM, DDIM, and Flow Matching on MNIST an
 
 ---
 
+## Training Progress
+
+![FM training progress over 100 epochs](assets/fm_training_progress.gif)
+
+*Flow Matching on MNIST — class-conditional samples (digits 0-9) across 100 epochs. Each frame is a 5-epoch step.*
+
+---
+
+## ODE Trajectory
+
+![FM denoising trajectory at epoch 100](assets/fm_trajectory_epoch100.png)
+
+*Single FM trajectory at epoch 100: t=0.0 (pure noise) to t=1.0 (generated sample). Structure solidifies around t=0.5, digit is recognizable from t=0.6 onward.*
+
+---
+
 ## Overview
 
 This repo implements three generative modeling approaches on the same architecture so they can be compared fairly:
@@ -30,11 +46,11 @@ Decoder: ConvTranspose2d stack, 4x upsampling
 Output:  same shape as input
 ```
 
-Measured latent statistics on MNIST: mean = 0.003, std = 0.998. The VAE hits near-perfect N(0,1) without extra regularization.
+Measured latent statistics on MNIST: mean = 0.003, std = 0.998. Near-perfect N(0,1) without extra regularization.
 
 ### LatentViT
 
-Shared backbone used by DDPM, DDIM, and Flow Matching.
+Shared backbone used by all three methods.
 
 ```
 Input:       (B, 16, 8, 8) latent
@@ -53,9 +69,9 @@ Output:      Linear(384, 16) -> rearrange -> (B, 16, 8, 8)
 | num_heads | 6 |
 | head_dim | 64 |
 | Total params | ~21M |
-| norm_first | True (required) |
+| norm_first | True (required at depth 12) |
 
-`norm_first=True` is not optional at depth 12. Post-LN collapses feature std to ~0.008 after 12 layers, causing the model to predict near-zeros. See the bug log below.
+`norm_first=True` is not optional. Post-LN collapses feature std to ~0.008 after 12 layers, causing the model to predict near-zeros and loss to flatline at 1.0. See the bugs section.
 
 ### Noise Schedules and Objectives
 
@@ -71,15 +87,21 @@ DDIM sampling:  deterministic, skip-step
 Interpolant:  z_t = (1-t)*z_0 + t*z_1
 Target:       v = z_1 - z_0  (constant velocity)
 Loss:         MSE(v_pred, v_target)
-Sampling:     Euler ODE  z_{t+dt} = z_t + v*dt
-              or Heun (2x compute, better trajectory)
+Sampling:     Euler  ->  z_{t+dt} = z_t + v*dt
+              Heun   ->  corrected Euler (2x passes/step, better trajectory)
 ```
 
 ---
 
 ## Results
 
-### Flow Matching on MNIST (100 epochs, LR=1e-4, batch=256)
+### Flow Matching on MNIST
+
+100 epochs, LR=1e-4, batch=256, ~99s/epoch on T4.
+
+![Training dashboard](assets/fm_dashboard.png)
+
+*Loss curve (top-left), grad norm decay (top-right), constant LR=1e-4 (bottom-left), per-epoch wall time (bottom-right).*
 
 | Epoch | Loss | Grad Norm |
 |-------|------|-----------|
@@ -90,9 +112,28 @@ Sampling:     Euler ODE  z_{t+dt} = z_t + v*dt
 | 98 (best) | 1.542 | 0.099 |
 | 100 | 1.544 | 0.099 |
 
-Average epoch time: ~99 seconds on T4. The loss plateaus around epoch 10 and improves slowly from there. Grad norm decays from 0.248 to a stable 0.099-0.101 range, which is healthy fine-tuning territory.
+Loss drops sharply in the first 5 epochs then plateaus. Grad norm decays from 0.248 to a stable 0.099-0.101 — healthy fine-tuning territory. Best checkpoint saved at epoch 98.
+
+**Visual quality by epoch:**
+
+| Epoch | Loss | Description |
+|-------|------|-------------|
+| 5 | 1.5625 | Disconnected blobs, no recognizable structure |
+| 50 | 1.5446 | Connected strokes, digits starting to form |
+| 100 | 1.5435 | Recognizable digits across all 10 classes |
+
+![Epoch 5 samples](assets/fm_samples_epoch5.png)
+*Epoch 5 — blobs, no clear digit shape*
+
+![Epoch 50 samples](assets/fm_samples_epoch50.png)
+*Epoch 50 — strokes connecting, class structure visible*
+
+![Epoch 100 samples](assets/fm_samples_epoch100.png)
+*Epoch 100 — all 10 digits recognizable, consistent within each class*
 
 ### DDPM on MNIST (14 epochs, LR=1e-3, batch=256, after fixes)
+
+Note: DDPM and FM losses measure different things (noise prediction vs velocity prediction) and are not directly comparable.
 
 | Epoch | Loss |
 |-------|------|
@@ -101,33 +142,31 @@ Average epoch time: ~99 seconds on T4. The loss plateaus around epoch 10 and imp
 | 7 | 0.275 |
 | 13 (best) | 0.271 |
 
-Note: DDPM and FM losses are not directly comparable (different targets: epsilon vs velocity).
+Visual quality at epoch 14: disconnected stroke shapes, class conditioning partially working but digits not yet legible. The ~0.27 plateau is architecture-determined (see bugs section).
 
 ### Sampling Speed
 
-| Method | Steps | Notes |
-|--------|-------|-------|
-| DDPM | 1000 | Reference quality |
-| DDIM | 50 | Slightly below DDPM |
+| Method | Steps | Quality vs DDPM-1000 |
+|--------|-------|----------------------|
+| DDPM | 1000 | Reference |
+| DDIM | 50 | Slightly below reference |
 | FM (Euler) | 50 | Comparable to DDIM-50 |
-| FM (Euler) | 20 | 2.5x faster than DDIM-50 |
+| FM (Euler) | 20 | Slightly below FM-Euler-50 |
 | FM (Heun) | 20 | Better than FM-Euler-50 |
 
 ---
 
 ## Bugs Fixed
 
-These took the most debugging time and are worth knowing about before you start.
+**norm_first must be True at depth 12.** Post-LN compounds over 12 layers: feature std dropped to 0.008 after the transformer. Output projection maps near-zeros to near-zeros. MSE(zeros, noise) = 1.0 exactly, so loss flatlines without moving. Flipping `norm_first=True` and adding a final `LayerNorm` fixed it.
 
-**norm_first must be True at depth 12.** PyTorch's default Post-LN compounds over 12 layers: feature std dropped to 0.008 after the transformer. The output projection then maps near-zeros to near-zeros. MSE(zeros, noise) = 1.0 exactly, so loss sits at 1.0 every epoch without moving. Flipping `norm_first=True` fixed it immediately.
-
-**output_proj needs explicit init.** Even with Pre-LN, default Kaiming init on the output projection was too large for this setting. `nn.init.normal_(weight, std=0.02)` was required alongside the norm fix.
+**output_proj needs explicit init.** Even with Pre-LN, default Kaiming init caused instability. `nn.init.normal_(weight, std=0.02)` alongside the norm fix was required.
 
 **Device must be passed to DDPMSpatialLatent.** The sampler defaults to `device='cpu'`. Instantiating without `device='cuda'` gives a tensor type mismatch at the first batch.
 
-**Test from pure noise, not encoded images.** Passing a clean encoded latent to the DDPM sampler produces corrupted output. That is correct behavior. DDPM is a denoiser trained on noisy inputs. The correct test is `z = torch.randn(...)` then run the full reverse process.
+**Test from pure noise, not encoded images.** Passing a clean encoded latent to the DDPM sampler produces corrupted output — correct behavior, since DDPM is trained on noisy inputs. The correct generation test is `z = torch.randn(...)` followed by the full reverse process.
 
-**Class embedding scale.** `nn.init.normal_(weight, std=0.02)` on the class embedding gives std ~0.02 while the time embedding has std ~0.25. The 12x imbalance slows class conditioning. Fix: remove the manual init and add a small MLP projection after the embedding.
+**Class embedding scale.** Manual `std=0.02` init on the class embedding gives std ~0.02 while the time embedding has std ~0.25. The 12x imbalance slows class conditioning. Fix: remove the manual init and add an MLP projection after the embedding.
 
 ---
 
@@ -195,6 +234,13 @@ acceleration-flow-matching/
 │   ├── 01_vae_training.ipynb
 │   ├── 02_ddpm_training.ipynb
 │   └── 03_flow_matching.ipynb
+├── assets/
+│   ├── fm_training_progress.gif
+│   ├── fm_samples_keyframes.gif
+│   ├── fm_trajectory_progress.gif
+│   ├── fm_trajectory_epoch100.png
+│   ├── fm_dashboard.png
+│   └── fm_samples_epoch{5,50,100}.png
 ├── experiments/
 ├── requirements.txt
 └── README.md
@@ -203,8 +249,6 @@ acceleration-flow-matching/
 ---
 
 ## Citation
-
-If you use this code, please cite:
 
 ```bibtex
 @misc{sahoo2026accelfm,
