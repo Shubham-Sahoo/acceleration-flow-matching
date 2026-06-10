@@ -449,12 +449,19 @@ class TrainingCallback:
             model_sampler.model.train()
 
     def _save_trajectory(self, model_sampler, device, sample_labels):
-        """Save FM denoising trajectory (t=0 → t=1) for one sample."""
+        """Save denoising trajectory for FM or DDPM."""
         try:
             model_sampler.model.eval()
-            label = (
-                torch.tensor([1], device=device)
+            label = torch.tensor([1], device=device)
+
+            n_steps = (
+                self.n_sample_steps_fm if self.model_type == "fm"
+                else self.n_sample_steps_ddpm
             )
+            n_snapshots = 10
+            snapshot_every = max(1, n_steps // n_snapshots)
+            snapshots = []
+            timesteps_saved = []
 
             z_t = torch.randn(
                 1, self.latent_channels,
@@ -462,31 +469,57 @@ class TrainingCallback:
                 device=device
             )
 
-            n_steps = self.n_sample_steps_fm
-            dt = 1.0 / n_steps
-            n_snapshots = 10
-            snapshot_every = max(1, n_steps // n_snapshots)
-            snapshots = []
-            timesteps_saved = []
-
             with torch.no_grad():
-                for i, t_val in enumerate(
-                    np.linspace(0, 1 - dt, n_steps)
-                ):
-                    if i % snapshot_every == 0:
-                        img = model_sampler.vae.decode_only(z_t)
-                        snapshots.append(img[0].cpu())
-                        timesteps_saved.append(t_val)
 
-                    t_tensor = torch.full((1,), t_val, device=device)
-                    v = model_sampler.model(z_t, label, t_tensor)
-                    z_t = z_t + v * dt
+                if self.model_type == "fm":
+                    # FM: t goes 0 → 1 (forward in time)
+                    dt = 1.0 / n_steps
+                    for i, t_val in enumerate(np.linspace(0, 1 - dt, n_steps)):
+                        if i % snapshot_every == 0:
+                            snapshots.append(model_sampler.vae.decode_only(z_t)[0].cpu())
+                            timesteps_saved.append(t_val)
+                        t_tensor = torch.full((1,), t_val, device=device)
+                        v = model_sampler.model(z_t, label, t_tensor)
+                        z_t = z_t + v * dt
 
-                # final
-                img = model_sampler.vae.decode_only(z_t)
-                snapshots.append(img[0].cpu())
-                timesteps_saved.append(1.0)
+                else:
+                    # DDPM: t goes T → 0 (reverse in time)
+                    betas = model_sampler.betas
+                    alphas = model_sampler.alphas
+                    sqrt_alpha_bars = model_sampler.sqrt_alpha_bars
+                    sqrt_1_minus_alpha_bars = model_sampler.sqrt_1_minus_alpha_bars
 
+                    timesteps = torch.linspace(
+                        model_sampler.num_steps - 1, 0,
+                        n_steps, dtype=torch.long, device=device
+                    )
+
+                    for i, step in enumerate(timesteps):
+                        if i % snapshot_every == 0:
+                            snapshots.append(model_sampler.vae.decode_only(z_t)[0].cpu())
+                            # Normalize t to [0,1] for display (1=noisy, 0=clean)
+                            timesteps_saved.append(step.item() / model_sampler.num_steps)
+
+                        t_val = step.float() / model_sampler.num_steps
+                        t_tensor = torch.full((1,), t_val.item(), device=device)
+
+                        epsilon_pred = model_sampler.model(z_t, label, t_tensor)
+
+                        beta_t = betas[step]
+                        alpha_t = alphas[step]
+                        sqrt_1_minus_ab = sqrt_1_minus_alpha_bars[step]
+
+                        z_t = (1 / torch.sqrt(alpha_t)) * (
+                            z_t - (beta_t / sqrt_1_minus_ab) * epsilon_pred
+                        )
+                        if step > 0:
+                            z_t = z_t + torch.sqrt(beta_t) * torch.randn_like(z_t)
+
+            # Final snapshot
+            snapshots.append(model_sampler.vae.decode_only(z_t)[0].cpu())
+            timesteps_saved.append(0.0)
+
+            # Plot
             n = len(snapshots)
             fig, axes = plt.subplots(1, n, figsize=(n * 2, 2.2))
             for i, (snap, t) in enumerate(zip(snapshots, timesteps_saved)):
@@ -497,10 +530,8 @@ class TrainingCallback:
                 axes[i].set_title(f"t={t:.2f}", fontsize=7)
                 axes[i].axis("off")
 
-            fig.suptitle(
-                f"FM Trajectory — Epoch {self.current_epoch}",
-                fontsize=9
-            )
+            method = self.model_type.upper()
+            fig.suptitle(f"{method} Trajectory — Epoch {self.current_epoch}", fontsize=9)
             plt.tight_layout()
 
             out = self.dirs["trajectories"] / f"epoch_{self.current_epoch:04d}.png"
