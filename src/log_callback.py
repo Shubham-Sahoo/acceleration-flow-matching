@@ -266,8 +266,8 @@ class TrainingCallback:
         if self.current_epoch % self.sample_every_n_epochs == 0 and model_sampler is not None:
             self._save_samples(model_sampler, device, sample_labels, avg_loss)
 
-            if self.model_type == "fm":
-                self._save_trajectory(model_sampler, device, sample_labels)
+            
+            self._save_trajectory(model_sampler, device, sample_labels)
 
         # ── plots (save every epoch, cheap) ──
         self._save_plots()
@@ -476,7 +476,8 @@ class TrainingCallback:
                     dt = 1.0 / n_steps
                     for i, t_val in enumerate(np.linspace(0, 1 - dt, n_steps)):
                         if i % snapshot_every == 0:
-                            snapshots.append(model_sampler.vae.decode_only(z_t)[0].cpu())
+                            img = model_sampler.vae.decode_only(z_t)[0].detach().cpu()
+                            snapshots.append(img)
                             timesteps_saved.append(t_val)
                         t_tensor = torch.full((1,), t_val, device=device)
                         v = model_sampler.model(z_t, label, t_tensor)
@@ -496,7 +497,8 @@ class TrainingCallback:
 
                     for i, step in enumerate(timesteps):
                         if i % snapshot_every == 0:
-                            snapshots.append(model_sampler.vae.decode_only(z_t)[0].cpu())
+                            img = model_sampler.vae.decode_only(z_t)[0].detach().cpu()
+                            snapshots.append(img)
                             # Normalize t to [0,1] for display (1=noisy, 0=clean)
                             timesteps_saved.append(step.item() / model_sampler.num_steps)
 
@@ -516,7 +518,8 @@ class TrainingCallback:
                             z_t = z_t + torch.sqrt(beta_t) * torch.randn_like(z_t)
 
             # Final snapshot
-            snapshots.append(model_sampler.vae.decode_only(z_t)[0].cpu())
+            img = model_sampler.vae.decode_only(z_t)[0].detach().cpu()
+            snapshots.append(img)
             timesteps_saved.append(0.0)
 
             # Plot
